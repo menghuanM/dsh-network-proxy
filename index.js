@@ -1,3 +1,14 @@
+// dsh-network-proxy — server half.
+// Upstream source: https://github.com/kriskite/dsh-network-proxy
+// Pinned upstream commit: 4cc265a2115cffdcfbf4f74257243b12a98ac9e0
+//
+// DSH Desktop 2.0.10 (@deepseek-ai/dsh 0.1.5-rc.2) compatibility patch:
+// `activate()` no longer closes the previous global dispatcher. The Desktop
+// launcher installs a boot-time proxy policy through @deepseek-ai/dsh-http-proxy,
+// whose `proxyRouteFor()` keeps handing that dispatcher object to the web-fetch
+// tool for proxied routes even after another dispatcher is installed globally.
+// Closing it here would break `web fetch` whenever a boot-time env proxy policy
+// is active. Skipping the close only leaks one dispatcher per mode switch.
 import { execFileSync } from 'node:child_process'
 import z from '@deepseek-ai/schemastery'
 import { settingsNamespace } from '@deepseek-ai/dsh-settings'
@@ -153,15 +164,12 @@ function apply(ctx) {
 
     const activate = (value) => {
       validateSettings(value)
-      const previous = activeDispatcher
+      // Compatibility (DSH Desktop 2.0.10): the previous dispatcher is
+      // intentionally left unclosed — @deepseek-ai/dsh-http-proxy may still
+      // reference it for proxied web-fetch routes. See the file header.
       activeDispatcher = dispatcherFor(value)
       applyProxyEnvironment(value)
       setGlobalDispatcher(activeDispatcher)
-      if (previous !== activeDispatcher && typeof previous.close === 'function') {
-        Promise.resolve(previous.close()).catch((error) => {
-          ctx.logger?.warn?.('failed to close previous network dispatcher: %s', String(error))
-        })
-      }
     }
 
     activate(scope.get())

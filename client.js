@@ -1,9 +1,50 @@
+// dsh-network-proxy — web client half.
+// Upstream source: https://github.com/kriskite/dsh-network-proxy
+// Pinned upstream commit: 4cc265a2115cffdcfbf4f74257243b12a98ac9e0
+//
+// DSH Desktop 2.0.10 (@deepseek-ai/dsh 0.1.5-rc.2) compatibility patches:
+// 1. `@deepseek-ai/dsh-client-runtime` is not a client module in this build's
+//    client-module graph, so `createSnapshotStore` is inlined here (same
+//    clone-on-update snapshot semantics the upstream helper provides).
+// 2. The settings remote API unwraps to `{ ok, value, error }` directly — the
+//    upstream `response.result.*` envelope does not exist on this build.
+// 3. `settings.describe()` takes no arguments and `settings.mutate()` takes
+//    positional (ns, ops, expectedRevision) arguments, matching
+//    @deepseek-ai/dsh-client-ui-settings on this build.
+// 4. `settings/document-updated` carries no payload on this build, so the
+//    invalidation handler refreshes unconditionally (same as the official
+//    settings UI).
+// 5. The controller reads remotes through the `remote` service (ctx.remote),
+//    matching how the official settings UI reaches the same API.
+// 6. Client services use dotted nested names on this build: the settings
+//    remotes face is the `remote.settings` service, and `ctx.remote.settings`
+//    resolves only when BOTH `remote` and `remote.settings` are declared in
+//    the plugin's inject (dsh-client-ui-settings declares exactly that pair).
+//    Declaring `remote` alone made the `.settings` access throw
+//    `cannot get property "remote.settings" without inject`.
 window.__ModuleLoader__.load({
   id: 'dsh-network-proxy',
   factory: (require) => {
     const module = { exports: {} }
     const React = require('react')
-    const { createSnapshotStore } = require('@deepseek-ai/dsh-client-runtime/client')
+
+    function createSnapshotStore(initial) {
+      let state = initial
+      const listeners = new Set()
+      return {
+        getSnapshot: () => state,
+        subscribe(listener) {
+          listeners.add(listener)
+          return () => { listeners.delete(listener) }
+        },
+        update(recipe) {
+          const next = { ...state }
+          recipe(next)
+          state = next
+          for (const listener of [...listeners]) listener()
+        },
+      }
+    }
 
     const NS = 'settings.networkProxy'
     const SETTINGS_NS = 'network-proxy'
@@ -62,8 +103,8 @@ window.__ModuleLoader__.load({
     }
 
     class NetworkProxyController {
-      constructor(api) {
-        this.api = api
+      constructor(remote) {
+        this.remote = remote
         this.view = undefined
         this.generation = 0
         this.store = createSnapshotStore({
@@ -80,16 +121,16 @@ window.__ModuleLoader__.load({
         const generation = ++this.generation
         this.store.update((state) => { state.status = 'loading'; state.error = null })
         try {
-          const response = await this.api.settings.describe({})
-          if (!response.result.ok) throw new Error(response.result.error.message)
+          const response = await this.remote.settings.describe()
+          if (!response.ok) throw new Error(response.error.message)
           if (generation !== this.generation) return
-          const view = response.result.value.namespaces.find((entry) => entry.ns === SETTINGS_NS)
+          const view = response.value.namespaces.find((entry) => entry.ns === SETTINGS_NS)
           if (!view) {
             this.view = undefined
             this.store.update((state) => { state.status = 'unavailable'; state.writable = false })
             return
           }
-          this.accept(view, response.result.value.writable)
+          this.accept(view, response.value.writable)
         } catch (error) {
           if (generation !== this.generation) return
           this.fail(error)
@@ -102,14 +143,10 @@ window.__ModuleLoader__.load({
         this.store.update((state) => { state.status = 'saving'; state.error = null })
         try {
           const ops = Object.entries(patch).map(([key, value]) => ({ op: 'set', path: [key], value }))
-          const response = await this.api.settings.mutate({
-            ns: SETTINGS_NS,
-            ops,
-            expectedRevision: this.view.revision,
-          })
+          const response = await this.remote.settings.mutate(SETTINGS_NS, ops, this.view.revision)
           if (generation !== this.generation) return
-          if (!response.result.ok) throw new Error(response.result.error.message)
-          this.accept(response.result.value, true)
+          if (!response.ok) throw new Error(response.error.message)
+          this.accept(response.value, true)
         } catch (error) {
           if (generation !== this.generation) return
           this.fail(error)
@@ -192,12 +229,12 @@ window.__ModuleLoader__.load({
       )
     }
 
-    const inject = ['slots', 'locale', 'connection', 'remote']
+    const inject = ['slots', 'locale', 'remote', 'remote.settings']
     function apply(ctx) {
       ensureStyles()
       ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'network-proxy: dictionaries')
       const t = ctx.locale.bind(NS)
-      const controller = new NetworkProxyController(ctx.get('connection').api)
+      const controller = new NetworkProxyController(ctx.remote)
       const useProxy = (selector) => React.useSyncExternalStore(
         (listener) => controller.store.subscribe(listener),
         () => selector(controller.store.getSnapshot()),
@@ -209,7 +246,8 @@ window.__ModuleLoader__.load({
           if (controller.store.getSnapshot().status !== 'idle') controller.load()
         }
         const disposers = [
-          ctx.remote.$on('settings/document-updated', (ns) => { if (ns === SETTINGS_NS) refresh() }),
+          // Compatibility: this event carries no payload on this build.
+          ctx.remote.$on('settings/document-updated', () => refresh()),
           ctx.on('connection/reset', refresh),
         ]
         return () => { controller.dispose(); for (const dispose of disposers) dispose() }

@@ -6,6 +6,10 @@ DeepSeek Harness (DSH) 的网络代理管理插件。为用户提供图形化设
 > Network proxy management plugin for DeepSeek Harness. Switch between
 > **system / manual / direct** proxy modes from the settings UI, applied live.
 
+> **当前版本 1.0.1 为 DSH Desktop 2.0.10 兼容版**：客户端取数路径、`dsh.client` 声明与
+> 服务端 dispatcher 生命周期已按 `@deepseek-ai/dsh` 0.1.5-rc.2 的接口调整（含嵌套服务名
+> `remote.settings` 声明）。适配目标与逐条改动见 [PATCHES.md](./PATCHES.md)。
+
 ## ✨ 功能特性
 
 - **三种模式**
@@ -22,9 +26,9 @@ DeepSeek Harness (DSH) 的网络代理管理插件。为用户提供图形化设
 | 依赖 | 版本 |
 | --- | --- |
 | Node.js | >= 20.18.1（由 `undici@7` 要求） |
-| DeepSeek Harness | 支持 DSH 插件与 `settings` / `client` 注入的运行环境 |
-| `@deepseek-ai/dsh-settings` | `0.1.0-rc.7` |
-| `@deepseek-ai/schemastery` | `3.18.1` |
+| DeepSeek Harness | 支持 DSH 插件与 `settings` / `client` 注入的运行环境；1.0.1 实测于 DSH Desktop 2.0.10（`@deepseek-ai/dsh` 0.1.5-rc.2） |
+| `@deepseek-ai/dsh-settings` | `>= 0.1.0-rc.7`（实测 0.1.5-rc.2） |
+| `@deepseek-ai/schemastery` | `^3.18.1`（实测 3.18.2） |
 
 ## 🚀 安装
 
@@ -36,6 +40,9 @@ npm install dsh-network-proxy
 
 插件通过 `cordis.patch.yml` 注入 `network-proxy` 插件点，并在客户端 `settings.general.item`
 插槽注册「网络代理」设置项。
+
+DSH Desktop 的用户 profile（`$DSH_HOME/profiles/<name>`）里，把它加入
+`dsh.profile.bundles` 并安装为依赖即可，与其他 bundle 插件一致。
 
 ## ⚙️ 配置项
 
@@ -53,11 +60,12 @@ npm install dsh-network-proxy
 
 ```bash
 npm install
-npm test          # node --test index.test.js
+npm test          # node smoke-test.mjs
 ```
 
-测试覆盖 Windows 代理字符串解析、显式 scheme 保留、以及（仅在 Windows 平台）读取
-活动系统代理的逻辑。
+`smoke-test.mjs` 覆盖 Windows 代理字符串解析、显式 scheme 保留、URL 校验、`settings`
+注册形状、live settings 联动驱动的全局 dispatcher 切换，以及（仅在 Windows 平台）读取
+活动系统代理的逻辑；依赖缺失时（裸 checkout）报告 SKIP 而非失败。
 
 ## 📁 目录结构
 
@@ -66,9 +74,10 @@ dsh-network-proxy/
 ├── index.js            # 服务端插件：代理 Dispatcher 管理与环境变量注入
 ├── client.js           # Web 客户端：设置界面 UI 与状态管理
 ├── cordis.patch.yml    # cordis 插件注入声明
+├── smoke-test.mjs      # 冒烟测试
+├── PATCHES.md          # DSH Desktop 兼容性补丁明细
 ├── package.json
-├── package-lock.json
-└── index.test.js       # 单元测试
+└── package-lock.json
 ```
 
 ## 📄 License
@@ -87,3 +96,6 @@ A: The URL must start with `http://` or `https://`; anything else is rejected be
 
 **Q: Does direct mode affect the system proxy?**
 A: No — it only clears the environment variables DSH reads; your OS proxy setting is untouched.
+
+**Q: Windows 下 PAC 自动代理脚本支持吗？**
+A: 不支持。检测到 `AutoConfigURL` 时会提示改用手动代理。
