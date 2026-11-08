@@ -1,33 +1,98 @@
-// dsh-network-proxy — web client half.
-// Upstream source: https://github.com/kriskite/dsh-network-proxy
-// Pinned upstream commit: 4cc265a2115cffdcfbf4f74257243b12a98ac9e0
-//
-// DSH Desktop 2.0.10 (@deepseek-ai/dsh 0.1.5-rc.2) compatibility patches:
-// 1. `@deepseek-ai/dsh-client-runtime` is not a client module in this build's
-//    client-module graph, so `createSnapshotStore` is inlined here (same
-//    clone-on-update snapshot semantics the upstream helper provides).
-// 2. The settings remote API unwraps to `{ ok, value, error }` directly — the
-//    upstream `response.result.*` envelope does not exist on this build.
-// 3. `settings.describe()` takes no arguments and `settings.mutate()` takes
-//    positional (ns, ops, expectedRevision) arguments, matching
-//    @deepseek-ai/dsh-client-ui-settings on this build.
-// 4. `settings/document-updated` carries no payload on this build, so the
-//    invalidation handler refreshes unconditionally (same as the official
-//    settings UI).
-// 5. The controller reads remotes through the `remote` service (ctx.remote),
-//    matching how the official settings UI reaches the same API.
-// 6. Client services use dotted nested names on this build: the settings
-//    remotes face is the `remote.settings` service, and `ctx.remote.settings`
-//    resolves only when BOTH `remote` and `remote.settings` are declared in
-//    the plugin's inject (dsh-client-ui-settings declares exactly that pair).
-//    Declaring `remote` alone made the `.settings` access throw
-//    `cannot get property "remote.settings" without inject`.
+/**
+ * dsh-network-proxy — browser half.
+ *
+ * Contributes one settings row to the General section (`settings.general.item`
+ * id `network-proxy`): the three-mode egress switch — follow system / manual
+ * proxy / direct — with the manual endpoint field and a live status line.
+ *
+ * Data flows over the plugin's own same-origin `/api/network-proxy` routes
+ * rather than a typed remote binding: those routes are served by the same host
+ * process on every kernel line, and the write path (POST `/apply`) is exactly
+ * the one the host half owns.
+ *
+ * Hand-written ModuleLoader bundle: no build step, no dependency beyond the
+ * `react` the shell already provides. All colour comes from theme variables
+ * so the row survives a scheme switch.
+ */
 window.__ModuleLoader__.load({
   id: 'dsh-network-proxy',
   factory: (require) => {
     const module = { exports: {} }
     const React = require('react')
+    const { createElement: h, useState, useEffect, useRef } = React
 
+    const NS = 'settings.networkProxy'
+    const API = '/api/network-proxy'
+    const inject = ['slots', 'locale']
+
+    const DICT = {
+      zh: {
+        'row.title': '网络代理',
+        'row.description': '配置 DeepSeek Harness 的出站网络代理，修改后立即生效',
+        'mode.system': '跟随系统',
+        'mode.manual': '手动代理',
+        'mode.direct': '直连',
+        'manual.placeholder': 'http://127.0.0.1:7890',
+        'manual.apply': '应用',
+        'status.active': '已生效',
+        'status.saving': '正在应用…',
+        'status.pending': '填写地址后点击「应用」生效',
+        'manual.cancel': '取消',
+        'status.error': '应用失败',
+        'status.offline': '插件后端不可用，重启应用后重试',
+        'status.retry': '重试',
+        'system.none': '系统未启用代理（当前直连）',
+        'system.active': '系统代理：{url}',
+      },
+      en: {
+        'row.title': 'Network proxy',
+        'row.description': 'Configure how DeepSeek Harness reaches the network; changes apply immediately',
+        'mode.system': 'Follow system',
+        'mode.manual': 'Manual proxy',
+        'mode.direct': 'Direct',
+        'manual.placeholder': 'http://127.0.0.1:7890',
+        'manual.apply': 'Apply',
+        'status.active': 'Active',
+        'status.saving': 'Applying…',
+        'status.pending': 'Enter an address, then Apply',
+        'manual.cancel': 'Cancel',
+        'status.error': 'Apply failed',
+        'status.offline': 'Plugin backend unavailable; restart the app and retry',
+        'status.retry': 'Retry',
+        'system.none': 'No system proxy enabled (direct now)',
+        'system.active': 'System proxy: {url}',
+      },
+    }
+
+    const CSS = [
+      '.dshNetProxyRow{border-bottom:1px solid var(--dsw-alias-border-l2);display:flex;flex-direction:column;gap:14px;padding:16px 0}',
+      '.dshNetProxyHeader{display:flex;align-items:flex-start;gap:24px}',
+      '.dshNetProxyCopy{display:flex;flex:1;min-width:0;flex-direction:column;gap:4px}',
+      '.dshNetProxyTitle{color:var(--dsw-alias-label-primary);font-size:14px;line-height:22px}',
+      '.dshNetProxyDesc,.dshNetProxyStatus{color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px}',
+      '.dshNetProxyStatus[data-error=true]{color:var(--dsw-alias-state-error-primary)}',
+      '.dshNetProxyModes{display:grid;grid-template-columns:repeat(3,minmax(72px,1fr));flex:none;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:2px;background:var(--dsw-alias-bg-module-platform)}',
+      '.dshNetProxyMode{height:30px;padding:0 10px;border:0;border-radius:6px;background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:13px;cursor:pointer;white-space:nowrap}',
+      '.dshNetProxyMode:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover)}',
+      '.dshNetProxyMode[data-active=true]{background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);box-shadow:var(--dsw-shadow-lv1)}',
+      '.dshNetProxyMode:disabled{cursor:default;opacity:.6}',
+      '.dshNetProxyManual{display:flex;align-items:center;gap:8px;padding-left:0}',
+      '.dshNetProxyInput{box-sizing:border-box;flex:1;min-width:0;height:36px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;background:var(--dsw-alias-bg-input);color:var(--dsw-alias-label-primary);padding:0 11px;font:inherit;font-size:13px;outline:none}',
+      '.dshNetProxyInput:focus{border-color:var(--dsw-alias-border-primary)}',
+      '.dshNetProxyApply{height:36px;border:0;border-radius:8px;padding:0 14px;background:var(--dsw-alias-interactive-bg-primary);color:var(--dsw-alias-label-on-primary);font:inherit;font-size:13px;cursor:pointer}',
+      '.dshNetProxyApply:disabled{cursor:default;opacity:.55}',
+      '.dshNetProxyCancel{height:36px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:0 14px;background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:13px;cursor:pointer}',
+      '.dshNetProxyCancel:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover)}',
+      '.dshNetProxyCancel:disabled{cursor:default;opacity:.55}',
+      '@media(max-width:680px){.dshNetProxyHeader{flex-direction:column;gap:12px}.dshNetProxyModes{width:100%}.dshNetProxyManual{align-items:stretch;flex-direction:column}.dshNetProxyApply,.dshNetProxyCancel{align-self:flex-end}}',
+    ].join('\n')
+
+    /**
+     * Minimal snapshot store: clone-on-update semantics so React's
+     * `useSyncExternalStore` can diff referentially.
+     *
+     * @param {object} initial
+     */
     function createSnapshotStore(initial) {
       let state = initial
       const listeners = new Set()
@@ -46,74 +111,41 @@ window.__ModuleLoader__.load({
       }
     }
 
-    const NS = 'settings.networkProxy'
-    const SETTINGS_NS = 'network-proxy'
-    const styles = `
-      .dshNetworkProxyRow{border-bottom:1px solid var(--dsw-alias-border-l2);display:flex;flex-direction:column;gap:14px;padding:16px 0}
-      .dshNetworkProxyHeader{display:flex;align-items:flex-start;gap:24px}
-      .dshNetworkProxyCopy{display:flex;flex:1;min-width:0;flex-direction:column;gap:4px}
-      .dshNetworkProxyTitle{color:var(--dsw-alias-label-primary);font-size:14px;line-height:22px}
-      .dshNetworkProxyDesc,.dshNetworkProxyStatus{color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px}
-      .dshNetworkProxyStatus[data-error=true]{color:var(--dsw-alias-state-error-primary)}
-      .dshNetworkProxyModes{display:grid;grid-template-columns:repeat(3,minmax(72px,1fr));flex:none;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:2px;background:var(--dsw-alias-bg-module-platform)}
-      .dshNetworkProxyMode{height:30px;padding:0 10px;border:0;border-radius:6px;background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:13px;cursor:pointer;white-space:nowrap}
-      .dshNetworkProxyMode:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover)}
-      .dshNetworkProxyMode[data-active=true]{background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);box-shadow:var(--dsw-shadow-lv1)}
-      .dshNetworkProxyMode:disabled{cursor:default;opacity:.6}
-      .dshNetworkProxyManual{display:flex;align-items:center;gap:8px;padding-left:0}
-      .dshNetworkProxyInput{box-sizing:border-box;flex:1;min-width:0;height:36px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;background:var(--dsw-alias-bg-input);color:var(--dsw-alias-label-primary);padding:0 11px;font:inherit;font-size:13px;outline:none}
-      .dshNetworkProxyInput:focus{border-color:var(--dsw-alias-border-primary)}
-      .dshNetworkProxyApply{height:36px;border:0;border-radius:8px;padding:0 14px;background:var(--dsw-alias-interactive-bg-primary);color:var(--dsw-alias-label-on-primary);font:inherit;font-size:13px;cursor:pointer}
-      .dshNetworkProxyApply:disabled{cursor:default;opacity:.55}
-      @media(max-width:680px){.dshNetworkProxyHeader{flex-direction:column;gap:12px}.dshNetworkProxyModes{width:100%}.dshNetworkProxyManual{align-items:stretch;flex-direction:column}.dshNetworkProxyApply{align-self:flex-end}}
-    `
-
-    function ensureStyles() {
-      if (document.querySelector('style[data-plugin-css="dsh-network-proxy"]')) return
-      const tag = document.createElement('style')
-      tag.dataset.plugin = 'dsh-network-proxy'
-      tag.dataset.pluginCss = 'dsh-network-proxy'
-      tag.textContent = styles
-      document.head.appendChild(tag)
+    async function fetchJson(path, options) {
+      const response = await fetch(`${API}${path}`, {
+        ...options,
+        headers: { 'content-type': 'application/json', ...(options?.headers ?? {}) },
+      })
+      let payload
+      try {
+        payload = await response.json()
+      } catch {
+        payload = {}
+      }
+      if (!response.ok || payload?.ok !== true) {
+        throw new Error(payload?.error || `HTTP ${response.status}`)
+      }
+      return payload
     }
 
-    const zh = {
-      title: '网络代理',
-      description: '配置 DeepSeek Harness 访问网络的方式，修改后立即生效',
-      system: '跟随系统',
-      manual: '手动代理',
-      direct: '直连',
-      placeholder: 'http://127.0.0.1:7890',
-      apply: '应用',
-      saving: '正在应用...',
-      ready: '已生效',
-      unavailable: '网络代理设置不可用',
-    }
-    const en = {
-      title: 'Network proxy',
-      description: 'Configure how DeepSeek Harness accesses the network; changes apply immediately',
-      system: 'Follow system',
-      manual: 'Manual proxy',
-      direct: 'Direct',
-      placeholder: 'http://127.0.0.1:7890',
-      apply: 'Apply',
-      saving: 'Applying...',
-      ready: 'Active',
-      unavailable: 'Network proxy settings are unavailable',
-    }
-
+    /**
+     * Owns the row's view state and the round trips to the plugin backend.
+     * `generation` makes a late response from a superseded load/save drop
+     * instead of clobbering the newer state.
+     */
     class NetworkProxyController {
-      constructor(remote) {
-        this.remote = remote
-        this.view = undefined
+      constructor() {
         this.generation = 0
         this.store = createSnapshotStore({
           status: 'idle',
           error: null,
-          writable: false,
           mode: 'system',
           url: '',
-          revision: 0,
+          systemProxy: null,
+          // The mode the host actually runs; `mode` may differ while the
+          // manual editor is staged.
+          appliedMode: 'system',
+          pending: false,
         })
       }
 
@@ -121,148 +153,254 @@ window.__ModuleLoader__.load({
         const generation = ++this.generation
         this.store.update((state) => { state.status = 'loading'; state.error = null })
         try {
-          const response = await this.remote.settings.describe()
-          if (!response.ok) throw new Error(response.error.message)
+          const payload = await fetchJson('')
           if (generation !== this.generation) return
-          const view = response.value.namespaces.find((entry) => entry.ns === SETTINGS_NS)
-          if (!view) {
-            this.view = undefined
-            this.store.update((state) => { state.status = 'unavailable'; state.writable = false })
-            return
-          }
-          this.accept(view, response.value.writable)
+          this.store.update((state) => {
+            // Server-side status maps onto row states: a refused activation
+            // (dead endpoint, degraded backend) must surface as an error with
+            // its reason instead of masquerading as "active".
+            state.status = payload.status === 'error' ? 'error' : payload.status === 'idle' ? 'idle' : 'ready'
+            state.error = payload.status === 'error' && typeof payload.error === 'string' && payload.error !== ''
+              ? payload.error
+              : null
+            state.mode = payload.mode ?? 'system'
+            state.url = typeof payload.url === 'string' ? payload.url : ''
+            state.systemProxy = payload.systemProxy ?? null
+            // A fresh read is authoritative: it clears any staged editor.
+            state.appliedMode = payload.mode ?? 'system'
+            state.pending = false
+          })
         } catch (error) {
           if (generation !== this.generation) return
-          this.fail(error)
+          this.store.update((state) => {
+            state.status = 'offline'
+            state.error = null
+          })
         }
       }
 
-      async save(patch) {
-        if (!this.view || !this.store.getSnapshot().writable) return
+      async save(mode, url) {
         const generation = ++this.generation
         this.store.update((state) => { state.status = 'saving'; state.error = null })
         try {
-          const ops = Object.entries(patch).map(([key, value]) => ({ op: 'set', path: [key], value }))
-          const response = await this.remote.settings.mutate(SETTINGS_NS, ops, this.view.revision)
+          const payload = await fetchJson('/apply', {
+            method: 'POST',
+            body: JSON.stringify(mode === 'manual' ? { mode, url } : { mode }),
+          })
           if (generation !== this.generation) return
-          if (!response.ok) throw new Error(response.error.message)
-          this.accept(response.value, true)
+          this.store.update((state) => {
+            state.status = 'ready'
+            state.mode = payload.mode ?? mode
+            state.url = typeof payload.url === 'string' ? payload.url : ''
+            state.systemProxy = payload.systemProxy ?? null
+            state.appliedMode = payload.mode ?? mode
+            state.pending = false
+          })
         } catch (error) {
           if (generation !== this.generation) return
-          this.fail(error)
+          this.store.update((state) => {
+            state.status = 'error'
+            state.error = error instanceof Error ? error.message : String(error)
+          })
         }
       }
 
-      accept(view, writable) {
-        const value = view.value || {}
-        this.view = view
+      /**
+       * Switch to the manual row *without committing anything*.
+       *
+       * Manual mode is the one mode that needs a value the user must type
+       * first, so selecting it is not an apply: posting `{mode:'manual'}`
+       * with no URL would be rejected by the host (`Manual proxy requires a
+       * URL`) and bounce the row back to the previous mode. Selecting it only
+       * stages the editor; `save('manual', url)` commits once a URL exists.
+       */
+      stageManual() {
+        this.generation += 1
         this.store.update((state) => {
           state.status = 'ready'
           state.error = null
-          state.writable = writable
-          state.mode = typeof value.mode === 'string' ? value.mode : 'system'
-          state.url = typeof value.url === 'string' ? value.url : ''
-          state.revision = view.revision
+          // Remember what the host is actually running so an abandoned
+          // editor can go back to it; `pending` marks this row as uncommitted.
+          state.appliedMode = state.mode
+          state.mode = 'manual'
+          state.pending = true
         })
       }
 
-      fail(error) {
+      /** Abandon the staged manual editor and return to the applied mode. */
+      stageCancel() {
+        this.generation += 1
         this.store.update((state) => {
-          state.status = 'error'
-          state.error = error instanceof Error ? error.message : String(error)
+          state.status = 'ready'
+          state.error = null
+          state.mode = state.appliedMode ?? 'system'
+          state.pending = false
         })
       }
 
-      dispose() { this.generation += 1; this.view = undefined }
+      dispose() {
+        this.generation += 1
+      }
     }
 
-    function NetworkProxyRow({ controller, useProxy, t }) {
-      const state = useProxy((snapshot) => snapshot)
-      const [url, setUrl] = React.useState(state.url)
-      React.useEffect(() => { controller.load() }, [controller])
-      React.useEffect(() => { setUrl(state.url) }, [state.url])
-      if (state.status === 'unavailable') return null
+    function NetworkProxyRow({ controller, t }) {
+      const state = React.useSyncExternalStore(
+        (listener) => controller.store.subscribe(listener),
+        () => controller.store.getSnapshot(),
+        () => controller.store.getSnapshot(),
+      )
+      const [draft, setDraft] = useState(state.url)
+      const mounted = useRef(false)
+
+      useEffect(() => {
+        if (!mounted.current) {
+          mounted.current = true
+          controller.load()
+        }
+        const onVisibility = () => {
+          if (document.visibilityState === 'visible') controller.load()
+        }
+        document.addEventListener('visibilitychange', onVisibility)
+        return () => document.removeEventListener('visibilitychange', onVisibility)
+      }, [controller])
+
+      useEffect(() => { setDraft(state.url) }, [state.url])
+
       const busy = state.status === 'loading' || state.status === 'saving'
-      const disabled = busy || !state.writable
+      const disabled = busy
+      /**
+       * `manual` is staged, every other mode is applied straight away.
+       *
+       * Applying manually only makes sense once a URL exists; selecting the
+       * tab first is what lets the user type one. `appliedMode` tracks the
+       * mode the host actually has, so abandoning the manual editor can put
+       * the row back where it was.
+       */
       const choose = (mode) => {
-        if (mode === state.mode || disabled) return
-        controller.save({ mode })
+        if (mode === state.mode || disabled || state.status === 'offline') return
+        if (mode === 'manual') {
+          controller.stageManual()
+          return
+        }
+        controller.save(mode)
       }
-      const status = state.error || (state.status === 'saving' ? t('saving') : state.status === 'ready' ? t('ready') : '')
-      return React.createElement('div', { className: 'dshNetworkProxyRow' },
-        React.createElement('div', { className: 'dshNetworkProxyHeader' },
-          React.createElement('div', { className: 'dshNetworkProxyCopy' },
-            React.createElement('div', { className: 'dshNetworkProxyTitle' }, t('title')),
-            React.createElement('div', { className: 'dshNetworkProxyDesc' }, t('description')),
-            status && React.createElement('div', { className: 'dshNetworkProxyStatus', 'data-error': Boolean(state.error), role: state.error ? 'alert' : undefined }, status),
+      /** Leave the manual editor without committing anything. */
+      const cancelManual = () => {
+        controller.stageCancel()
+      }
+      const statusText = state.status === 'offline'
+        ? t('status.offline')
+        : state.error !== null
+          ? `${t('status.error')}: ${state.error}`
+          : state.status === 'saving'
+            ? t('status.saving')
+            : state.status === 'ready' && state.pending
+              ? t('status.pending')
+              : state.status === 'ready'
+                ? t('status.active')
+                : ''
+      const systemLine = state.status === 'ready' && state.mode === 'system'
+        ? (state.systemProxy?.httpProxy ?? state.systemProxy?.httpsProxy)
+          ? t('system.active').replace('{url}', state.systemProxy.httpProxy ?? state.systemProxy.httpsProxy)
+          : t('system.none')
+        : ''
+
+      return h('div', { className: 'dshNetProxyRow' },
+        h('div', { className: 'dshNetProxyHeader' },
+          h('div', { className: 'dshNetProxyCopy' },
+            h('div', { className: 'dshNetProxyTitle' }, t('row.title')),
+            h('div', { className: 'dshNetProxyDesc' }, t('row.description')),
+            systemLine !== '' && h('div', { className: 'dshNetProxyDesc' }, systemLine),
+            statusText !== '' && h('div', {
+              className: 'dshNetProxyStatus',
+              'data-error': state.error !== null,
+              role: state.error !== null ? 'alert' : undefined,
+            }, statusText),
           ),
-          React.createElement('div', { className: 'dshNetworkProxyModes', role: 'radiogroup', 'aria-label': t('title') },
-            ['system', 'manual', 'direct'].map((mode) => React.createElement('button', {
+          h('div', { className: 'dshNetProxyModes', role: 'radiogroup', 'aria-label': t('row.title') },
+            ['system', 'manual', 'direct'].map((mode) => h('button', {
               key: mode,
               type: 'button',
               role: 'radio',
               'aria-checked': state.mode === mode,
               'data-active': state.mode === mode,
-              className: 'dshNetworkProxyMode',
+              className: 'dshNetProxyMode',
               disabled,
               onClick: () => choose(mode),
-            }, t(mode))),
+            }, t(`mode.${mode}`))),
           ),
         ),
-        state.mode === 'manual' && React.createElement('form', {
-          className: 'dshNetworkProxyManual',
-          onSubmit: (event) => { event.preventDefault(); controller.save({ url: url.trim(), mode: 'manual' }) },
+        state.mode === 'manual' && h('form', {
+          className: 'dshNetProxyManual',
+          onSubmit: (event) => {
+            event.preventDefault()
+            // Nothing to apply until a URL is actually typed: submitting an
+            // empty field is what used to post `{mode:'manual'}` and get
+            // refused by the host.
+            if (disabled || state.status === 'offline' || draft.trim() === '') return
+            controller.save('manual', draft.trim())
+          },
         },
-          React.createElement('input', {
-            className: 'dshNetworkProxyInput',
+          h('input', {
+            className: 'dshNetProxyInput',
             type: 'url',
-            value: url,
-            placeholder: t('placeholder'),
+            value: draft,
+            placeholder: t('manual.placeholder'),
             disabled,
             required: true,
             pattern: 'https?://.*',
-            'aria-label': t('manual'),
-            onChange: (event) => setUrl(event.target.value),
+            'aria-label': t('mode.manual'),
+            autoFocus: state.pending,
+            onChange: (event) => setDraft(event.target.value),
           }),
-          React.createElement('button', { className: 'dshNetworkProxyApply', type: 'submit', disabled: disabled || !url.trim() || url.trim() === state.url }, t('apply')),
+          h('button', {
+            className: 'dshNetProxyApply',
+            type: 'submit',
+            // Only a genuinely new, non-empty value can be applied; an
+            // unchanged URL is already live.
+            disabled: disabled || state.status === 'offline' || draft.trim() === '' || (!state.pending && draft.trim() === state.url),
+          }, t('manual.apply')),
+          h('button', {
+            className: 'dshNetProxyCancel',
+            type: 'button',
+            disabled,
+            onClick: () => cancelManual(),
+          }, t('manual.cancel')),
         ),
+        state.status === 'offline' && h('button', {
+          type: 'button',
+          className: 'dshNetProxyApply',
+          onClick: () => controller.load(),
+        }, t('status.retry')),
       )
     }
 
-    const inject = ['slots', 'locale', 'remote', 'remote.settings']
     function apply(ctx) {
-      ensureStyles()
-      ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'network-proxy: dictionaries')
       const t = ctx.locale.bind(NS)
-      const controller = new NetworkProxyController(ctx.remote)
-      const useProxy = (selector) => React.useSyncExternalStore(
-        (listener) => controller.store.subscribe(listener),
-        () => selector(controller.store.getSnapshot()),
-        () => selector(controller.store.getSnapshot()),
-      )
-      const injected = () => ({ controller, useProxy })
+
+      ctx.effect(() => ctx.locale.register(NS, { zh: DICT.zh, en: DICT.en }), 'network-proxy: dictionaries')
+
       ctx.effect(() => {
-        const refresh = () => {
-          if (controller.store.getSnapshot().status !== 'idle') controller.load()
-        }
-        const disposers = [
-          // Compatibility: this event carries no payload on this build.
-          ctx.remote.$on('settings/document-updated', () => refresh()),
-          ctx.on('connection/reset', refresh),
-        ]
-        return () => { controller.dispose(); for (const dispose of disposers) dispose() }
-      }, 'network-proxy: invalidations')
+        const style = document.createElement('style')
+        style.setAttribute('data-plugin', 'dsh-network-proxy')
+        style.textContent = CSS
+        document.head.appendChild(style)
+        return () => style.remove()
+      }, 'network-proxy: styles')
+
+      const controller = new NetworkProxyController()
       ctx.slots.inject('settings.general.item', () => ctx.slots.register({
         name: 'settings.general.item',
         id: 'network-proxy',
         order: -10,
         locale: NS,
-        inject: injected,
-      }, NetworkProxyRow))
+      }, () => h(NetworkProxyRow, { controller, t })))
+      ctx.effect(() => () => controller.dispose(), 'network-proxy: controller')
     }
 
     module.exports.apply = apply
     module.exports.inject = inject
+    module.exports.name = 'network-proxy'
     return module.exports
   },
 })

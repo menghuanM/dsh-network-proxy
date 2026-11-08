@@ -1,9 +1,9 @@
 {
-  "name": "dsh-network-proxy",
-  "version": "1.0.1",
-  "private": true,
+  "name": "@menghuanm/dsh-network-proxy",
+  "version": "2.2.1",
   "type": "module",
-  "main": "index.js",
+  "description": "DeepSeek Harness 网络代理插件：跟随系统 / 手动代理 / 直连，修改后立即生效。",
+  "main": "./index.js",
   "exports": {
     ".": "./index.js",
     "./client": "./client.js",
@@ -13,10 +13,13 @@
   "files": [
     "index.js",
     "client.js",
+    "src",
     "cordis.patch.yml",
-    "PATCHES.md",
     "LICENSE",
-    "README.md"
+    "README.md",
+    "PATCHES.md",
+    "CHANGELOG.md",
+    "smoke-test.mjs"
   ],
   "scripts": {
     "test": "node smoke-test.mjs"
@@ -26,20 +29,13 @@
       "patch": "./cordis.patch.yml"
     },
     "client": {
-      "inject": [
-        "@deepseek-ai/dsh-api-remotes",
-        "@deepseek-ai/dsh-client-locale",
-        "@deepseek-ai/dsh-client-ui-settings"
-      ],
-      "platform": "web"
+      "platform": "web",
+      "immediately": true,
+      "inject": []
     }
   },
   "dependencies": {
     "undici": "^7.18.2"
-  },
-  "peerDependencies": {
-    "@deepseek-ai/dsh-settings": ">=0.1.0-rc.7",
-    "@deepseek-ai/schemastery": "^3.18.1"
   },
   "keywords": [
     "deepseek-harness",
@@ -50,5 +46,6 @@
   ],
   "engines": {
     "node": ">=20.18.1"
-  }
+  },
+  "license": "MIT"
 }
