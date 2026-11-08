@@ -15,7 +15,7 @@
  * so the row survives a scheme switch.
  */
 window.__ModuleLoader__.load({
-  id: 'dsh-network-proxy',
+  id: '@menghuanm/dsh-network-proxy',
   factory: (require) => {
     const module = { exports: {} }
     const React = require('react')
